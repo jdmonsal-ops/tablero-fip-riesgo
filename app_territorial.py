@@ -28,6 +28,10 @@ def cargar_datos():
     df['descripcion_hecho'] = df['descripcion_hecho'].fillna("")
     df['sectores_afectados_lista'] = df['sectores_afectados_lista'].fillna("Ninguno")
     df['impactos_sectoriales'] = df['impactos_sectoriales'].fillna("{}")
+    
+    if 'enlace' not in df.columns:
+        df['enlace'] = ""
+    df['enlace'] = df['enlace'].fillna("")
     return df
 
 df_acciones = cargar_datos()
@@ -57,7 +61,7 @@ with f_col3:
     mpio_sel = st.selectbox("🗺️ Municipio", ["Todos"] + mpios_disponibles)
 
 with f_col4:
-    meses_sel = st.selectbox("🕒 Ventana Temporal", [3, 6, 12, 24], index=1, format_func=lambda x: f"Últimos {x} meses")
+    meses_sel = st.selectbox("🕒 Ventana Temporal", [3, 6, 12], index=2, format_func=lambda x: f"Últimos {x} meses")
 
 # ==========================================
 # 4. MOTOR DE FILTRADO PRINCIPAL
@@ -77,20 +81,20 @@ if depto_sel != "Todos":
 if mpio_sel != "Todos":
     df_filtrado = df_filtrado[df_filtrado['llave_geo'] == f"{mpio_sel} - {depto_sel}"]
 
-df_unicos = df_filtrado.drop_duplicates(subset=['id_acciones_presencia'])
+df_unicos = df_filtrado.drop_duplicates(subset=['id_acciones_presencia']).copy()
 
 # ==========================================
-# 5. TÍTULO Y CINTA DE KPIs (Fijos)
+# 5. TÍTULO Y CINTA DE KPIs
 # ==========================================
 st.markdown("<h2 style='text-align: center; color: #333;'>LECTURA OPERATIVA COMPLEMENTARIA</h2>", unsafe_allow_html=True)
 st.divider()
 
 if df_filtrado.empty:
-    st.warning("⚠️ No hay eventos armados registrados para esta combinación de filtros.")
+    st.warning("⚠️ No hay reportes registrados para esta combinación de filtros.")
     st.stop()
 
-total_eventos = df_unicos['id_acciones_presencia'].nunique()
-total_victimas = df_unicos['total_victimas'].sum()
+total_reportes = df_unicos['id_acciones_presencia'].nunique()
+municipios_afectados = df_unicos['municipio_clean'].nunique()
 
 impactos_pos = 0
 impactos_neg = 0
@@ -105,18 +109,17 @@ for _, row in df_unicos.iterrows():
         continue
 
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-kpi1.metric("🚨 Total Eventos", total_eventos)
-kpi2.metric("👥 Total Víctimas", int(total_victimas))
+kpi1.metric("🚨 Total Reportes", total_reportes)
+kpi2.metric("🗺️ Municipios Afectados", municipios_afectados)
 kpi3.metric("🔴 Amenazas (Ataques)", impactos_neg)
 kpi4.metric("🟢 Mitigaciones (Estado)", impactos_pos)
 
 # ==========================================
-# 6. FILTRO OPERATIVO (Pastillas horizontales)
+# 6. FILTRO OPERATIVO
 # ==========================================
-st.write("") # Espacio
-st.markdown("<div style='text-align: center;'><small><b>FILTRO OPERATIVO (Aplica a los gráficos inferiores)</b></small></div>", unsafe_allow_html=True)
+st.write("") 
+st.markdown("<div style='text-align: center;'><small><b>FILTRO OPERATIVO (Aplica a gráficos inferiores)</b></small></div>", unsafe_allow_html=True)
 
-# Centramos el selector usando columnas
 _, col_center, _ = st.columns([1, 2, 1])
 with col_center:
     filtro_operativo = st.radio(
@@ -128,7 +131,6 @@ with col_center:
 
 st.divider()
 
-# Aplicar lógica del filtro operativo
 df_bottom = df_unicos.copy()
 
 def evaluar_polaridad(json_str, polaridad_buscada):
@@ -147,72 +149,80 @@ elif filtro_operativo == "🟢 Solo Mitigaciones":
     df_bottom = df_bottom[df_bottom['impactos_sectoriales'].apply(lambda x: evaluar_polaridad(x, "Positivo"))]
 
 # ==========================================
-# 7. PANELES INFERIORES (Con df_bottom)
+# 7. BOTONERA DINÁMICA (CROSS-FILTERING)
 # ==========================================
-col1, col2, col3 = st.columns(3, gap="large")
+st.markdown("#### 🎯 Dinámica de Actores")
+st.caption("Principales actores y sus acciones predominantes. Usa los botones para filtrar las tablas inferiores.")
 
-# --- COLUMNA 1: MODUS OPERANDI ---
-with col1:
-    st.markdown("#### 🎯 Modus Operandi")
-    st.caption("Principales actores y sus acciones predominantes.")
+df_mo_temp = df_bottom.dropna(subset=['actor_consolidado', 'tipo_accion_clean']).copy()
+
+if not df_mo_temp.empty:
+    top_acciones_filtro = df_mo_temp['tipo_accion_clean'].value_counts().nlargest(4).index.tolist()
+    opciones_accion = ["⚪ Todas"] + [f"🔹 {acc}" for acc in top_acciones_filtro]
     
-    df_mo = df_bottom.dropna(subset=['actor_consolidado', 'tipo_accion_clean']).copy()
+    accion_sel = st.radio("Filtrar por Acción Específica", options=opciones_accion, horizontal=True, label_visibility="collapsed")
     
-    if not df_mo.empty:
-        # 1. Separar los actores combinados
-        df_mo['actor_individual'] = df_mo['actor_consolidado'].str.split(',')
-        df_mo_exploded = df_mo.explode('actor_individual')
-        df_mo_exploded['actor_individual'] = df_mo_exploded['actor_individual'].str.strip()
-        
-        # 2. Filtrar Top 5 Actores
-        top_actores = df_mo_exploded.groupby('actor_individual')['id_acciones_presencia'].nunique().nlargest(5).index
-        mo_data = df_mo_exploded[df_mo_exploded['actor_individual'].isin(top_actores)].copy()
-        
-        # 3. TRUCO VISUAL: Dejar solo el Top 4 de acciones y agrupar el resto en "Otras"
-        top_acciones = mo_data['tipo_accion_clean'].value_counts().nlargest(4).index
-        mo_data['Accion_Limpia'] = mo_data['tipo_accion_clean'].apply(lambda x: x if x in top_acciones else 'Otras')
-        
-        # 4. Agrupar datos exactos para el gráfico
-        df_plot = mo_data.groupby(['actor_individual', 'Accion_Limpia'])['id_acciones_presencia'].nunique().reset_index()
-        df_plot.columns = ['Actor', 'Acción', 'Total']
-        
-        # 5. Renderizar con Plotly para estética profesional
-        fig = px.bar(
-            df_plot,
-            x='Total',
-            y='Actor',
-            color='Acción',
-            orientation='h', # Barras horizontales
-            color_discrete_sequence=px.colors.qualitative.Pastel
-        )
-        
-        # Limpiar la interfaz del gráfico
-        fig.update_layout(
-            margin=dict(l=0, r=0, t=10, b=0),
-            legend=dict(
-                orientation="h", 
-                yanchor="top", 
-                y=-0.2, 
-                xanchor="center", 
-                x=0.5,
-                title=None
-            ),
-            yaxis_title=None,
-            xaxis_title=None,
-            height=320
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
+    if accion_sel != "⚪ Todas":
+        accion_real = accion_sel.replace("🔹 ", "")
+        df_interactive = df_bottom[df_bottom['tipo_accion_clean'] == accion_real].copy()
     else:
-        st.info("Datos insuficientes.")
+        df_interactive = df_bottom.copy()
+else:
+    df_interactive = df_bottom.copy()
 
-# --- COLUMNA 2: IMPACTO SECTORIAL ---
-with col2:
+# ==========================================
+# 8. FILA 1: GRÁFICO (100% ANCHO)
+# ==========================================
+df_mo = df_interactive.dropna(subset=['actor_consolidado', 'tipo_accion_clean']).copy()
+
+if not df_mo.empty:
+    df_mo['actor_individual'] = df_mo['actor_consolidado'].str.split(',')
+    df_mo_exploded = df_mo.explode('actor_individual')
+    df_mo_exploded['actor_individual'] = df_mo_exploded['actor_individual'].str.strip()
+    
+    top_actores = df_mo_exploded.groupby('actor_individual')['id_acciones_presencia'].nunique().nlargest(5).index
+    mo_data = df_mo_exploded[df_mo_exploded['actor_individual'].isin(top_actores)].copy()
+    
+    top_acciones = mo_data['tipo_accion_clean'].value_counts().nlargest(4).index
+    mo_data['Accion_Limpia'] = mo_data['tipo_accion_clean'].apply(lambda x: x if x in top_acciones else 'Otras')
+    
+    df_plot = mo_data.groupby(['actor_individual', 'Accion_Limpia'])['id_acciones_presencia'].nunique().reset_index()
+    df_plot.columns = ['Actor', 'Acción', 'Reportes'] # <-- Corrección de "Total" a "Reportes"
+    
+    fig = px.bar(
+        df_plot,
+        x='Reportes',
+        y='Actor',
+        color='Acción',
+        orientation='h', 
+        color_discrete_sequence=px.colors.qualitative.Pastel
+    )
+    
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=10, b=0),
+        showlegend=False if accion_sel != "⚪ Todas" else True, # Oculta la leyenda si se usa la botonera
+        legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5, title=None),
+        yaxis_title=None,
+        xaxis_title=None,
+        height=350
+    )
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("Datos insuficientes para dibujar la dinámica.")
+
+st.write("") 
+
+# ==========================================
+# 9. FILA 2: IMPACTO Y NARRATIVA
+# ==========================================
+col_izq, col_der = st.columns(2, gap="large")
+
+with col_izq:
     st.markdown("#### 📊 Impacto Sectorial")
     st.caption("Distribución del riesgo sobre sectores estratégicos.")
     
     conteo_sectores = Counter()
-    for _, row in df_bottom.iterrows():
+    for _, row in df_interactive.iterrows():
         try:
             dic_impactos = json.loads(row['impactos_sectoriales'])
             for sec, _ in dic_impactos.items():
@@ -221,22 +231,25 @@ with col2:
             continue
 
     if conteo_sectores:
-        df_sec = pd.DataFrame(conteo_sectores.most_common(), columns=["Sector Estratégico", "Total Eventos"])
+        df_sec = pd.DataFrame(conteo_sectores.most_common(), columns=["Sector Estratégico", "Total Reportes"])
         st.dataframe(df_sec, use_container_width=True, hide_index=True)
-        
-        if 'renta_ilicita_identificada' in df_bottom.columns:
-            st.write("**Economías Ilegales presentes:**")
-            rentas = df_bottom[df_bottom['renta_ilicita_identificada'] != 'Ninguna']['renta_ilicita_identificada'].value_counts()
-            if not rentas.empty:
-                st.dataframe(rentas.reset_index().rename(columns={'renta_ilicita_identificada': 'Renta', 'count': 'Frecuencia'}), use_container_width=True, hide_index=True)
-            else:
-                st.caption("Sin rentas asociadas.")
     else:
-        st.info("Ninguno de los 8 sectores fue afectado en este cruce.")
+        st.info("Ninguno de los sectores fue afectado en esta selección.")
+        
+    st.write("**Economías Ilegales presentes:**")
+    # NOTA: Cambia 'renta_ilicita_identificada' si tu base de datos usa otro nombre de columna para las economías ilegales.
+    col_renta = 'renta_ilicita_identificada' 
+    if col_renta in df_interactive.columns:
+        rentas = df_interactive[df_interactive[col_renta].notna() & (df_interactive[col_renta] != 'Ninguna')][col_renta].value_counts()
+        if not rentas.empty:
+            st.dataframe(rentas.reset_index().rename(columns={col_renta: 'Renta', 'count': 'Frecuencia'}), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No se reportaron economías ilegales para esta selección.")
+    else:
+        st.caption("Columna de rentas ilícitas no disponible en la base de datos actual.")
 
-# --- COLUMNA 3: NARRATIVA TÁCTICA ---
-with col3:
-    st.markdown("#### 📝 Narrativa Táctica")
+with col_der:
+    st.markdown("#### 📝 Narrativa")
     st.caption("Conceptos clave extraídos de los reportes del territorio.")
     
     stopwords = {'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'y', 'o', 'pero', 'si', 'no', 
@@ -245,7 +258,7 @@ with col3:
                  'del', 'sobre', 'entre', 'tambien', 'cuando', 'donde'}
     
     pares_palabras = []
-    for texto in df_bottom['descripcion_hecho'].dropna():
+    for texto in df_interactive['descripcion_hecho'].dropna():
         texto_limpio = re.sub(r'[^\w\s]', '', str(texto).lower())
         palabras = [p for p in texto_limpio.split() if p not in stopwords and len(p) > 2]
         for i in range(len(palabras) - 1):
@@ -264,7 +277,7 @@ with col3:
                 "Concepto": "Concepto",
                 "Frecuencia": st.column_config.ProgressColumn(
                     "Intensidad",
-                    format=" ",  # Oculta el número
+                    format=" ",
                     min_value=0,
                     max_value=max_frec,
                 ),
@@ -274,3 +287,34 @@ with col3:
         )
     else:
         st.info("Textos insuficientes para extraer narrativa.")
+
+# ==========================================
+# 10. MÓDULO DE FUENTES (Acordeón)
+# ==========================================
+st.divider()
+
+with st.expander("🔎 Fuentes (Últimos 50 reportes)"):
+    df_fuentes = df_interactive[['fecha_hecho', 'municipio_clean', 'actor_consolidado', 'tipo_accion_clean', 'enlace']].copy()
+    df_fuentes['fecha_hecho'] = df_fuentes['fecha_hecho'].dt.strftime('%Y-%m-%d')
+    df_fuentes = df_fuentes.rename(columns={
+        'fecha_hecho': 'Fecha',
+        'municipio_clean': 'Municipio',
+        'actor_consolidado': 'Actor',
+        'tipo_accion_clean': 'Acción'
+    })
+    
+    df_fuentes = df_fuentes.head(50)
+    
+    st.dataframe(
+        df_fuentes,
+        column_config={
+            "enlace": st.column_config.LinkColumn(
+                "Fuente",
+                help="Haz clic para ver la noticia original",
+                validate="^https?://", 
+                display_text="🔗 Ver noticia"
+            )
+        },
+        use_container_width=True,
+        hide_index=True
+    )
